@@ -45,13 +45,17 @@ app.use("/sales", salesRoutes);
 
 /* MONGOOSE SETUP */
 const PORT = process.env.PORT || 9000;
-mongoose
-  .connect(process.env.MONGO_URL, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  })
-  .then(() => {
-    app.listen(PORT, () => console.log(`Server Port: ${PORT}`));
+const MAX_CONNECT_ATTEMPTS = 3;
+const RETRY_DELAY_MS = 10_000;
+
+async function connectAndStart(attempt = 1) {
+  try {
+    await mongoose.connect(process.env.MONGO_URL, {
+      serverSelectionTimeoutMS: 10_000,
+    });
+
+    // Only accept traffic once the database is ready.
+    app.listen(PORT, "0.0.0.0", () => console.log(`Server Port: ${PORT}`));
 
     /* ONLY ADD DATA ONE TIME */
     // AffiliateStat.insertMany(dataAffiliateStat);
@@ -60,5 +64,20 @@ mongoose
     // ProductStat.insertMany(dataProductStat);
     // Transaction.insertMany(dataTransaction);
     // User.insertMany(dataUser);
-  })
-  .catch((error) => console.log(`${error} did not connect`));
+  } catch (error) {
+    console.error(`MongoDB startup attempt ${attempt}/${MAX_CONNECT_ATTEMPTS} failed:`, error);
+    if (attempt >= MAX_CONNECT_ATTEMPTS) {
+      console.error("MongoDB unavailable after retries; terminating for Render to restart the service.");
+      process.exitCode = 1;
+      return;
+    }
+    setTimeout(() => void connectAndStart(attempt + 1), RETRY_DELAY_MS);
+  }
+}
+
+if (!process.env.MONGO_URL) {
+  console.error("MONGO_URL is missing. Configure it in the Render service environment.");
+  process.exitCode = 1;
+} else {
+  void connectAndStart();
+}
